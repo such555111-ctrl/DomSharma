@@ -4,9 +4,12 @@ import uuid
 import logging
 from datetime import datetime, timezone
 
-from flask import Flask, request, send_from_directory, abort, jsonify
+from flask import Flask, request, send_from_directory, abort, jsonify, Response
 import telebot
 from telebot import types
+import psycopg2
+import psycopg2.extras
+import psycopg2.pool
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("dom_sharma")
@@ -14,6 +17,11 @@ log = logging.getLogger("dom_sharma")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("Переменная окружения BOT_TOKEN не задана")
+
+# Строка подключения к Neon (Dashboard → Connect → Connection string).
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("Переменная окружения DATABASE_URL (строка подключения Neon) не задана")
 
 # Render автоматически прокидывает RENDER_EXTERNAL_URL для web-сервисов.
 # Можно переопределить вручную через WEBHOOK_URL, если нужно.
@@ -32,20 +40,159 @@ ADMIN_CHAT_IDS = {
 }
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-PRODUCTS_FILE = os.path.join(APP_DIR, "products.json")
-ORDERS_FILE = os.path.join(APP_DIR, "orders.json")
-QUESTIONS_FILE = os.path.join(APP_DIR, "questions.json")
-PROMOS_FILE = os.path.join(APP_DIR, "promos.json")
-UPLOAD_DIR = os.path.join(APP_DIR, "uploads")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 ALLOWED_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+IMAGE_MIME = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+    ".webp": "image/webp", ".gif": "image/gif",
+}
 ALLOWED_BADGES = {"hit", "trend", "sale", "instock"}
 ALLOWED_PROMO_TYPES = {"percent", "fixed"}
 
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024  # 8 МБ на файл
+
+
+# --- Хранилище: Neon PostgreSQL -----------------------------------------
+# Каждая коллекция — таблица (id SERIAL, data JSONB). Фото товаров лежат
+# в таблице uploads (BYTEA) и отдаются по /uploads/<имя>.
+
+TABLES = ("products", "orders", "questions", "promos")
+LEGACY_FILES = {  # одноразовый импорт старых JSON-файлов, если таблица пуста
+    "products": "products.json",
+    "orders": "orders.json",
+    "questions": "questions.json",
+    "promos": "promos.json",
+}
+
+_pool = psycopg2.pool.ThreadedConnectionPool(
+    1, 5, DATABASE_URL,
+    keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5,
+)
+
+
+def with_conn(fn):
+    """Выполняет fn(cursor) в транзакции. Neon усыпляет неактивные
+    подключения, поэтому при обрыве соединения повторяем один раз."""
+    for attempt in (1, 2):
+        conn = _pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                result = fn(cur)
+            conn.commit()
+            _pool.putconn(conn)
+            return result
+        except (psycopg2.OperationalError, psycopg2.InterfaceError):
+            _pool.putconn(conn, close=True)
+            if attempt == 2:
+                raise
+        except BaseException:
+            try:
+                conn.rollback()
+            finally:
+                _pool.putconn(conn)
+            raise
+
+
+def _json(obj):
+    return psycopg2.extras.Json(obj, dumps=lambda o: json.dumps(o, ensure_ascii=False))
+
+
+def db_list(table):
+    assert table in TABLES
+    return with_conn(lambda cur: (
+        cur.execute(f"SELECT data FROM {table} ORDER BY id"),
+        [r[0] for r in cur.fetchall()],
+    )[1])
+
+
+def db_get(table, rid):
+    assert table in TABLES
+
+    def run(cur):
+        cur.execute(f"SELECT data FROM {table} WHERE id = %s", (rid,))
+        row = cur.fetchone()
+        return row[0] if row else None
+    return with_conn(run)
+
+
+def db_insert(table, data):
+    """Вставляет запись, выдаёт ей id и возвращает готовый dict."""
+    assert table in TABLES
+
+    def run(cur):
+        cur.execute(f"SELECT nextval(pg_get_serial_sequence('{table}', 'id'))")
+        new_id = cur.fetchone()[0]
+        data["id"] = new_id
+        cur.execute(f"INSERT INTO {table} (id, data) VALUES (%s, %s)", (new_id, _json(data)))
+        return data
+    return with_conn(run)
+
+
+def db_update(table, rid, mutate):
+    """Читает запись под блокировкой, применяет mutate(data) и сохраняет.
+    Возвращает обновлённый dict или None, если записи нет."""
+    assert table in TABLES
+
+    def run(cur):
+        cur.execute(f"SELECT data FROM {table} WHERE id = %s FOR UPDATE", (rid,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        data = row[0]
+        mutate(data)
+        cur.execute(f"UPDATE {table} SET data = %s WHERE id = %s", (_json(data), rid))
+        return data
+    return with_conn(run)
+
+
+def db_delete(table, rid):
+    assert table in TABLES
+
+    def run(cur):
+        cur.execute(f"DELETE FROM {table} WHERE id = %s", (rid,))
+        return cur.rowcount > 0
+    return with_conn(run)
+
+
+def init_db():
+    def run(cur):
+        for t in TABLES:
+            cur.execute(f"CREATE TABLE IF NOT EXISTS {t} (id SERIAL PRIMARY KEY, data JSONB NOT NULL)")
+        cur.execute("CREATE INDEX IF NOT EXISTS orders_chat_idx ON orders ((data->>'customer_chat_id'))")
+        cur.execute("CREATE INDEX IF NOT EXISTS promos_code_idx ON promos ((data->>'code'))")
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS uploads ("
+            "name TEXT PRIMARY KEY, content_type TEXT NOT NULL, "
+            "data BYTEA NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+        )
+        # Разовый перенос старых JSON-файлов (если они есть и таблица пуста).
+        for t, fname in LEGACY_FILES.items():
+            path = os.path.join(APP_DIR, fname)
+            cur.execute(f"SELECT count(*) FROM {t}")
+            if cur.fetchone()[0] or not os.path.exists(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    items = json.load(f)
+            except (OSError, ValueError):
+                continue
+            for it in items if isinstance(items, list) else []:
+                if not isinstance(it, dict) or not isinstance(it.get("id"), int):
+                    continue
+                cur.execute(f"INSERT INTO {t} (id, data) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                            (it["id"], _json(it)))
+            cur.execute(
+                f"SELECT setval(pg_get_serial_sequence('{t}', 'id'), "
+                f"GREATEST((SELECT COALESCE(MAX(id), 0) FROM {t}), 1), "
+                f"(SELECT COUNT(*) > 0 FROM {t}))"
+            )
+            log.info("Импортирован %s в Neon", fname)
+    with_conn(run)
+
+
+init_db()
 
 
 # --- Вспомогательные функции для товаров и авторизации админа -----------
@@ -56,54 +203,6 @@ def require_admin():
     supplied = request.headers.get("X-Admin-Password", "")
     if supplied != ADMIN_PASSWORD:
         abort(401, description="Неверный пароль")
-
-
-def load_products():
-    if not os.path.exists(PRODUCTS_FILE):
-        return []
-    with open(PRODUCTS_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def save_products(items):
-    with open(PRODUCTS_FILE, "w", encoding="utf-8") as f:
-        json.dump(items, f, ensure_ascii=False, indent=2)
-
-
-def load_orders():
-    if not os.path.exists(ORDERS_FILE):
-        return []
-    with open(ORDERS_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def save_orders(items):
-    with open(ORDERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(items, f, ensure_ascii=False, indent=2)
-
-
-def load_questions():
-    if not os.path.exists(QUESTIONS_FILE):
-        return []
-    with open(QUESTIONS_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def save_questions(items):
-    with open(QUESTIONS_FILE, "w", encoding="utf-8") as f:
-        json.dump(items, f, ensure_ascii=False, indent=2)
-
-
-def load_promos():
-    if not os.path.exists(PROMOS_FILE):
-        return []
-    with open(PROMOS_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def save_promos(items):
-    with open(PROMOS_FILE, "w", encoding="utf-8") as f:
-        json.dump(items, f, ensure_ascii=False, indent=2)
 
 
 def fmt_price(n):
@@ -150,8 +249,11 @@ def find_promo_by_code(code):
     code_norm = (code or "").strip().upper()
     if not code_norm:
         return None
-    promos = load_promos()
-    return next((p for p in promos if p.get("code") == code_norm), None)
+    def run(cur):
+        cur.execute("SELECT data FROM promos WHERE data->>'code' = %s LIMIT 1", (code_norm,))
+        row = cur.fetchone()
+        return row[0] if row else None
+    return with_conn(run)
 
 
 def validate_promo_for_use(promo, subtotal, customer_chat_id=None):
@@ -177,13 +279,14 @@ def has_customer_used_promo(promo_code, customer_chat_id):
     (отменённые заказы не считаются использованием)."""
     if not promo_code or not customer_chat_id:
         return False
-    orders = load_orders()
-    return any(
-        o.get("promo_code") == promo_code
-        and o.get("customer_chat_id") == customer_chat_id
-        and o.get("status") != "cancelled"
-        for o in orders
-    )
+    def run(cur):
+        cur.execute(
+            "SELECT 1 FROM orders WHERE data->>'promo_code' = %s "
+            "AND data->>'customer_chat_id' = %s AND data->>'status' <> 'cancelled' LIMIT 1",
+            (promo_code, str(customer_chat_id)),
+        )
+        return cur.fetchone() is not None
+    return with_conn(run)
 
 
 def compute_promo_discount(promo, subtotal):
@@ -249,7 +352,9 @@ def index():
 
 @app.route("/products.json", methods=["GET"])
 def products():
-    return send_from_directory(APP_DIR, "products.json")
+    resp = jsonify(db_list("products"))
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 @app.route("/api/order", methods=["POST"])
@@ -287,10 +392,17 @@ def create_order():
 
     total = subtotal - discount
 
-    orders = load_orders()
-    new_id = (max([o.get("id", 0) for o in orders], default=0) + 1)
+    if promo:
+        def use_promo(p):
+            # повторная проверка лимита под блокировкой строки (защита от гонок)
+            mu = p.get("max_uses")
+            if mu is not None and int(p.get("used_count") or 0) >= int(mu):
+                abort(400, description="Лимит использований промокода исчерпан")
+            p["used_count"] = int(p.get("used_count") or 0) + 1
+        if db_update("promos", promo.get("id"), use_promo) is None:
+            abort(400, description="Промокод не найден")
+
     order = {
-        "id": new_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "name": name,
         "phone": phone,
@@ -305,15 +417,8 @@ def create_order():
         "status": "new",
         "messages": [],
     }
-    orders.append(order)
-    save_orders(orders)
-
-    if promo:
-        promos = load_promos()
-        for p in promos:
-            if p.get("id") == promo.get("id"):
-                p["used_count"] = int(p.get("used_count") or 0) + 1
-        save_promos(promos)
+    order = db_insert("orders", order)
+    new_id = order["id"]
 
     items_lines = "\n".join(
         f"· {i.get('name','—')} (размер {i.get('size') or '—'}) × {i.get('qty', 1)}"
@@ -403,10 +508,13 @@ def customer_orders():
         tg_id = int(request.args.get("tg_id", ""))
     except (TypeError, ValueError):
         abort(400, description="Некорректный tg_id")
-    orders = load_orders()
-    mine = [o for o in orders if o.get("customer_chat_id") == tg_id]
-    mine.sort(key=lambda o: o.get("id", 0), reverse=True)
-    return jsonify(mine)
+    def run(cur):
+        cur.execute(
+            "SELECT data FROM orders WHERE data->>'customer_chat_id' = %s ORDER BY id DESC",
+            (str(tg_id),),
+        )
+        return [r[0] for r in cur.fetchall()]
+    return jsonify(with_conn(run))
 
 
 @app.route("/api/orders/<int:oid>/cancel", methods=["POST"])
@@ -418,17 +526,15 @@ def customer_cancel_order(oid):
     except (TypeError, ValueError):
         abort(400, description="Некорректный tg_id")
 
-    orders = load_orders()
-    order = next((o for o in orders if o.get("id") == oid), None)
+    def do_cancel(o):
+        if o.get("customer_chat_id") != tg_id:
+            abort(403, description="Это не ваш заказ")
+        if o.get("status") != "new":
+            abort(400, description="Заказ уже в обработке — отмена недоступна")
+        o["status"] = "cancelled"
+    order = db_update("orders", oid, do_cancel)
     if not order:
         abort(404, description="Заказ не найден")
-    if order.get("customer_chat_id") != tg_id:
-        abort(403, description="Это не ваш заказ")
-    if order.get("status") != "new":
-        abort(400, description="Заказ уже в обработке — отмена недоступна")
-
-    order["status"] = "cancelled"
-    save_orders(orders)
 
     for admin_id in ADMIN_CHAT_IDS:
         try:
@@ -460,10 +566,7 @@ def create_question():
         customer_chat_id = None
     customer_username = (tg_user.get("username") or "").strip() or None
 
-    questions = load_questions()
-    new_id = (max([q.get("id", 0) for q in questions], default=0) + 1)
     entry = {
-        "id": new_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "product_id": product_id,
         "product_name": product_name,
@@ -473,8 +576,8 @@ def create_question():
         "status": "new",
         "messages": [],
     }
-    questions.append(entry)
-    save_questions(questions)
+    entry = db_insert("questions", entry)
+    new_id = entry["id"]
 
     if customer_chat_id:
         try:
@@ -505,7 +608,15 @@ def create_question():
 
 @app.route("/uploads/<path:filename>", methods=["GET"])
 def uploaded_file(filename):
-    return send_from_directory(UPLOAD_DIR, filename)
+    def run(cur):
+        cur.execute("SELECT content_type, data FROM uploads WHERE name = %s", (filename,))
+        return cur.fetchone()
+    row = with_conn(run)
+    if not row:
+        abort(404)
+    resp = Response(bytes(row[1]), mimetype=row[0])
+    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
 
 
 @app.route("/admin", methods=["GET"])
@@ -529,15 +640,13 @@ def admin_login():
 @app.route("/api/admin/products", methods=["GET"])
 def admin_get_products():
     require_admin()
-    return jsonify(load_products())
+    return jsonify(db_list("products"))
 
 
 @app.route("/api/admin/products", methods=["POST"])
 def admin_create_product():
     require_admin()
     data = request.get_json(force=True, silent=True) or {}
-    items = load_products()
-    new_id = (max([p.get("id", 0) for p in items], default=0) + 1)
     sizes_raw = data.get("sizes", "")
     sizes = [s.strip() for s in sizes_raw.split(",") if s.strip()] if isinstance(sizes_raw, str) else (sizes_raw or [])
     try:
@@ -546,7 +655,6 @@ def admin_create_product():
         price = 0
     images = sanitize_images(data.get("images") if "images" in data else data.get("image"))
     product = {
-        "id": new_id,
         "name": (data.get("name") or "").strip(),
         "category": (data.get("category") or "").strip(),
         "price": price,
@@ -558,8 +666,7 @@ def admin_create_product():
         "images": images,
         "image": images[0] if images else None,
     }
-    items.append(product)
-    save_products(items)
+    product = db_insert("products", product)
     return jsonify(product), 201
 
 
@@ -567,50 +674,48 @@ def admin_create_product():
 def admin_update_product(pid):
     require_admin()
     data = request.get_json(force=True, silent=True) or {}
-    items = load_products()
-    for p in items:
-        if p.get("id") == pid:
-            if "name" in data:
-                p["name"] = (data.get("name") or "").strip()
-            if "category" in data:
-                p["category"] = (data.get("category") or "").strip()
-            if "price" in data:
-                try:
-                    p["price"] = int(float(data.get("price") or 0))
-                except (TypeError, ValueError):
-                    pass
-            if "old_price" in data:
-                p["old_price"] = sanitize_old_price(data.get("old_price"))
-            if "badge" in data:
-                p["badge"] = sanitize_badge(data.get("badge"))
-            if "sizes" in data:
-                sizes_raw = data.get("sizes", "")
-                p["sizes"] = [s.strip() for s in sizes_raw.split(",") if s.strip()] if isinstance(sizes_raw, str) else (sizes_raw or p["sizes"])
-            if "desc" in data:
-                p["desc"] = (data.get("desc") or "").strip()
-            if "swatch" in data:
-                p["swatch"] = int(data.get("swatch") or 0) % 6
-            if "images" in data:
-                images = sanitize_images(data.get("images"))
-                p["images"] = images
-                p["image"] = images[0] if images else None
-            elif "image" in data:
-                images = sanitize_images(data.get("image"))
-                p["images"] = images
-                p["image"] = images[0] if images else None
-            save_products(items)
-            return jsonify(p)
-    abort(404, description="Товар не найден")
+
+    def apply(p):
+        if "name" in data:
+            p["name"] = (data.get("name") or "").strip()
+        if "category" in data:
+            p["category"] = (data.get("category") or "").strip()
+        if "price" in data:
+            try:
+                p["price"] = int(float(data.get("price") or 0))
+            except (TypeError, ValueError):
+                pass
+        if "old_price" in data:
+            p["old_price"] = sanitize_old_price(data.get("old_price"))
+        if "badge" in data:
+            p["badge"] = sanitize_badge(data.get("badge"))
+        if "sizes" in data:
+            sizes_raw = data.get("sizes", "")
+            p["sizes"] = [s.strip() for s in sizes_raw.split(",") if s.strip()] if isinstance(sizes_raw, str) else (sizes_raw or p["sizes"])
+        if "desc" in data:
+            p["desc"] = (data.get("desc") or "").strip()
+        if "swatch" in data:
+            p["swatch"] = int(data.get("swatch") or 0) % 6
+        if "images" in data:
+            images = sanitize_images(data.get("images"))
+            p["images"] = images
+            p["image"] = images[0] if images else None
+        elif "image" in data:
+            images = sanitize_images(data.get("image"))
+            p["images"] = images
+            p["image"] = images[0] if images else None
+
+    p = db_update("products", pid, apply)
+    if p is None:
+        abort(404, description="Товар не найден")
+    return jsonify(p)
 
 
 @app.route("/api/admin/products/<int:pid>", methods=["DELETE"])
 def admin_delete_product(pid):
     require_admin()
-    items = load_products()
-    new_items = [p for p in items if p.get("id") != pid]
-    if len(new_items) == len(items):
+    if not db_delete("products", pid):
         abort(404, description="Товар не найден")
-    save_products(new_items)
     return jsonify({"ok": True})
 
 
@@ -624,14 +729,18 @@ def admin_upload():
     if ext not in ALLOWED_IMAGE_EXT:
         abort(400, description="Недопустимый формат файла")
     filename = f"{uuid.uuid4().hex}{ext}"
-    file.save(os.path.join(UPLOAD_DIR, filename))
+    content = file.read()
+    with_conn(lambda cur: cur.execute(
+        "INSERT INTO uploads (name, content_type, data) VALUES (%s, %s, %s)",
+        (filename, IMAGE_MIME.get(ext, "application/octet-stream"), psycopg2.Binary(content)),
+    ))
     return jsonify({"url": f"/uploads/{filename}"}), 201
 
 
 @app.route("/api/admin/promos", methods=["GET"])
 def admin_get_promos():
     require_admin()
-    promos = load_promos()
+    promos = db_list("promos")
     promos.sort(key=lambda p: p.get("id", 0), reverse=True)
     return jsonify(promos)
 
@@ -658,13 +767,10 @@ def admin_create_promo():
     if promo_type == "percent" and value > 100:
         abort(400, description="Скидка в процентах не может быть больше 100")
 
-    promos = load_promos()
-    if any(p.get("code") == code for p in promos):
+    if find_promo_by_code(code):
         abort(400, description="Такой промокод уже существует")
 
-    new_id = (max([p.get("id", 0) for p in promos], default=0) + 1)
     promo = {
-        "id": new_id,
         "code": code,
         "type": promo_type,
         "value": value,
@@ -674,8 +780,7 @@ def admin_create_promo():
         "min_total": sanitize_positive_int(data.get("min_total")),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    promos.append(promo)
-    save_promos(promos)
+    promo = db_insert("promos", promo)
     return jsonify(promo), 201
 
 
@@ -683,57 +788,56 @@ def admin_create_promo():
 def admin_update_promo(pid):
     require_admin()
     data = request.get_json(force=True, silent=True) or {}
-    promos = load_promos()
-    for p in promos:
-        if p.get("id") == pid:
-            if "code" in data:
-                code = (data.get("code") or "").strip().upper()
-                if not code:
-                    abort(400, description="Укажите код промокода")
-                if any(o.get("code") == code and o.get("id") != pid for o in promos):
-                    abort(400, description="Такой промокод уже существует")
-                p["code"] = code
-            if "type" in data:
-                promo_type = (data.get("type") or "").strip().lower()
-                if promo_type not in ALLOWED_PROMO_TYPES:
-                    abort(400, description="Некорректный тип скидки")
-                p["type"] = promo_type
-            if "value" in data:
-                try:
-                    value = float(data.get("value"))
-                except (TypeError, ValueError):
-                    abort(400, description="Укажите значение скидки")
-                if value <= 0:
-                    abort(400, description="Значение скидки должно быть больше нуля")
-                if p.get("type") == "percent" and value > 100:
-                    abort(400, description="Скидка в процентах не может быть больше 100")
-                p["value"] = value
-            if "active" in data:
-                p["active"] = bool(data.get("active"))
-            if "max_uses" in data:
-                p["max_uses"] = sanitize_positive_int(data.get("max_uses"))
-            if "min_total" in data:
-                p["min_total"] = sanitize_positive_int(data.get("min_total"))
-            save_promos(promos)
-            return jsonify(p)
-    abort(404, description="Промокод не найден")
+
+    def apply(p):
+        if "code" in data:
+            code = (data.get("code") or "").strip().upper()
+            if not code:
+                abort(400, description="Укажите код промокода")
+            other = find_promo_by_code(code)
+            if other and other.get("id") != pid:
+                abort(400, description="Такой промокод уже существует")
+            p["code"] = code
+        if "type" in data:
+            promo_type = (data.get("type") or "").strip().lower()
+            if promo_type not in ALLOWED_PROMO_TYPES:
+                abort(400, description="Некорректный тип скидки")
+            p["type"] = promo_type
+        if "value" in data:
+            try:
+                value = float(data.get("value"))
+            except (TypeError, ValueError):
+                abort(400, description="Укажите значение скидки")
+            if value <= 0:
+                abort(400, description="Значение скидки должно быть больше нуля")
+            if p.get("type") == "percent" and value > 100:
+                abort(400, description="Скидка в процентах не может быть больше 100")
+            p["value"] = value
+        if "active" in data:
+            p["active"] = bool(data.get("active"))
+        if "max_uses" in data:
+            p["max_uses"] = sanitize_positive_int(data.get("max_uses"))
+        if "min_total" in data:
+            p["min_total"] = sanitize_positive_int(data.get("min_total"))
+
+    p = db_update("promos", pid, apply)
+    if p is None:
+        abort(404, description="Промокод не найден")
+    return jsonify(p)
 
 
 @app.route("/api/admin/promos/<int:pid>", methods=["DELETE"])
 def admin_delete_promo(pid):
     require_admin()
-    promos = load_promos()
-    new_promos = [p for p in promos if p.get("id") != pid]
-    if len(new_promos) == len(promos):
+    if not db_delete("promos", pid):
         abort(404, description="Промокод не найден")
-    save_promos(new_promos)
     return jsonify({"ok": True})
 
 
 @app.route("/api/admin/orders", methods=["GET"])
 def admin_get_orders():
     require_admin()
-    orders = load_orders()
+    orders = db_list("orders")
     orders.sort(key=lambda o: o.get("id", 0), reverse=True)
     return jsonify(orders)
 
@@ -745,13 +849,10 @@ def admin_update_order_status(oid):
     status = (data.get("status") or "").strip()
     if status not in {"new", "contacted", "done", "cancelled"}:
         abort(400, description="Некорректный статус")
-    orders = load_orders()
-    for o in orders:
-        if o.get("id") == oid:
-            o["status"] = status
-            save_orders(orders)
-            return jsonify(o)
-    abort(404, description="Заказ не найден")
+    o = db_update("orders", oid, lambda x: x.__setitem__("status", status))
+    if o is None:
+        abort(404, description="Заказ не найден")
+    return jsonify(o)
 
 
 @app.route("/api/admin/orders/<int:oid>/message", methods=["POST"])
@@ -762,8 +863,7 @@ def admin_message_customer(oid):
     if not text:
         abort(400, description="Введите текст сообщения")
 
-    orders = load_orders()
-    order = next((o for o in orders if o.get("id") == oid), None)
+    order = db_get("orders", oid)
     if not order:
         abort(404, description="Заказ не найден")
 
@@ -779,20 +879,21 @@ def admin_message_customer(oid):
     except Exception as e:
         abort(400, description=f"Не удалось отправить сообщение: {e}")
 
-    order.setdefault("messages", []).append({
-        "text": text,
-        "at": datetime.now(timezone.utc).isoformat(),
-    })
-    if order.get("status") == "new":
-        order["status"] = "contacted"
-    save_orders(orders)
+    def add_msg(o):
+        o.setdefault("messages", []).append({
+            "text": text,
+            "at": datetime.now(timezone.utc).isoformat(),
+        })
+        if o.get("status") == "new":
+            o["status"] = "contacted"
+    order = db_update("orders", oid, add_msg)
     return jsonify(order)
 
 
 @app.route("/api/admin/questions", methods=["GET"])
 def admin_get_questions():
     require_admin()
-    questions = load_questions()
+    questions = db_list("questions")
     questions.sort(key=lambda q: q.get("id", 0), reverse=True)
     return jsonify(questions)
 
@@ -805,8 +906,7 @@ def admin_message_question(qid):
     if not text:
         abort(400, description="Введите текст ответа")
 
-    questions = load_questions()
-    q = next((x for x in questions if x.get("id") == qid), None)
+    q = db_get("questions", qid)
     if not q:
         abort(404, description="Вопрос не найден")
 
@@ -822,12 +922,13 @@ def admin_message_question(qid):
     except Exception as e:
         abort(400, description=f"Не удалось отправить ответ: {e}")
 
-    q.setdefault("messages", []).append({
-        "text": text,
-        "at": datetime.now(timezone.utc).isoformat(),
-    })
-    q["status"] = "answered"
-    save_questions(questions)
+    def add_msg(x):
+        x.setdefault("messages", []).append({
+            "text": text,
+            "at": datetime.now(timezone.utc).isoformat(),
+        })
+        x["status"] = "answered"
+    q = db_update("questions", qid, add_msg)
     return jsonify(q)
 
 
