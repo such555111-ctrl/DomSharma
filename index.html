@@ -7,7 +7,7 @@
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Marck+Script&family=Playfair+Display:wght@600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Great+Vibes&family=Marck+Script&family=Playfair+Display:wght@600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root{
     /* ДОМ ШАРМА — Beauty & Care palette (cream & forest green) */
@@ -24,7 +24,7 @@
     --border-radius-btn:10px;
     --font-heading:'Playfair Display',serif;
     --font-body:'Inter',sans-serif;
-    --font-logo:'Marck Script',cursive;
+    --font-logo:'Great Vibes','Marck Script',cursive;
 
     /* compatibility aliases (used throughout the existing stylesheet) */
     --bg:var(--bg-primary);
@@ -84,7 +84,8 @@
   .brand-text{display:flex;flex-direction:column;line-height:1;}
   .logo{
     font-family:var(--font-logo);
-    font-size:22px;font-weight:400;letter-spacing:.01em;white-space:nowrap;
+    font-size:34px;font-weight:400;letter-spacing:0;white-space:nowrap;
+    line-height:1.05;padding:2px 4px 4px 0;
     color:var(--text);
     background:linear-gradient(100deg,var(--text) 0%,var(--accent-neon) 22%,#EFE4C8 38%,var(--accent) 52%,var(--text) 68%,var(--accent-neon) 84%,var(--text) 100%);
     background-size:280% 100%;
@@ -96,8 +97,8 @@
     100%{background-position:-280% 50%;}
   }
   .logo-sub{
-    margin-top:3px;font-family:var(--font-body),sans-serif;font-size:8px;font-weight:400;
-    letter-spacing:.32em;text-transform:uppercase;color:var(--muted);
+    margin-top:0;padding-left:34px;font-family:var(--font-body),sans-serif;font-size:9px;font-weight:400;
+    letter-spacing:.06em;text-transform:uppercase;color:var(--muted);white-space:nowrap;
   }
   .header-actions{display:flex;align-items:center;gap:8px;}
   .icon-btn{
@@ -570,22 +571,8 @@
 <div id="app">
   <header>
     <div class="brand">
-      <svg class="brand-mark" width="26" height="26" viewBox="0 0 30 30" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <linearGradient id="brandGrad" x1="0" y1="0" x2="30" y2="30" gradientUnits="userSpaceOnUse">
-            <stop offset="0" stop-color="#4B5B3F"/>
-            <stop offset=".5" stop-color="#7C9166"/>
-            <stop offset="1" stop-color="#4B5B3F"/>
-          </linearGradient>
-        </defs>
-        <g class="mark-rot">
-          <path d="M4 12l5 3.5L15 6l6 9.5 5-3.5-2 12H6L4 12Z" stroke="url(#brandGrad)" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
-          <path d="M8.5 22.5h13" stroke="url(#brandGrad)" stroke-width="1.6" stroke-linecap="round"/>
-        </g>
-      </svg>
       <div class="brand-text">
         <div class="logo">Дом Шарма</div>
-        <div class="logo-sub">Beauty &amp; Care</div>
       </div>
     </div>
     <div class="header-actions">

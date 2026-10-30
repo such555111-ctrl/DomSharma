@@ -209,7 +209,7 @@ def cmd_start(message: types.Message):
     keyboard = types.InlineKeyboardMarkup()
     keyboard.add(
         types.InlineKeyboardButton(
-            text="✨ Открыть ДОМ ШАРМА",
+            text="Каталог товаров",
             web_app=types.WebAppInfo(url=BASE_URL + "/")
         )
     )
@@ -225,10 +225,10 @@ def cmd_start(message: types.Message):
 
     bot.send_message(
         message.chat.id,
-        "✨ *ДОМ ШАРМА — Бьюти & уход*\n\n"
-        "Добро пожаловать в Дом Шарма! Корейская и премиальная косметика, кремы, "
-        "сыворотки и средства для ухода за лицом и телом.\n\n"
-        "Нажмите кнопку ниже, чтобы открыть каталог товаров, проверить наличие и оформить заказ.",
+        "Вы в Доме Шарма! 💫\n\n"
+        "Мы собрали для вас коллекцию оригинальной косметики и парфюмерии "
+        "от любимых мировых брендов.\n\n"
+        "Открывайте каталог и оформляйте заказ, нажав кнопку ниже ⬇️",
         reply_markup=keyboard,
         parse_mode="Markdown",
     )
