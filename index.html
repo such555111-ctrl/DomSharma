@@ -139,6 +139,62 @@
   .ticker span{margin:0 28px;}
   @keyframes scroll{from{transform:translateX(0);}to{transform:translateX(-50%);}}
 
+
+  /* ---------- ПОИСК ПО КАТАЛОГУ ---------- */
+  .search-wrap{padding:14px 20px 0;}
+  .search-box{
+    position:relative;display:flex;align-items:center;gap:10px;height:46px;padding:0 6px 0 16px;
+    background:var(--bg-elev);border:1px solid var(--line);border-radius:999px;color:var(--muted);
+    transition:border-color .22s var(--ease), box-shadow .22s var(--ease), background .22s var(--ease);
+  }
+  .search-box:focus-within{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-dim);color:var(--accent);}
+  .search-box svg{flex:0 0 auto;transition:transform .3s var(--ease-spring);}
+  .search-box:focus-within svg{transform:scale(1.1);}
+  .search-input{
+    flex:1;min-width:0;height:100%;border:0;outline:0;background:transparent;color:var(--text);
+    font-family:var(--font-body),sans-serif;font-size:15px;font-weight:400;letter-spacing:.01em;
+    -webkit-appearance:none;appearance:none;
+  }
+  .search-input::placeholder{color:var(--muted-dim);font-weight:300;}
+  .search-input::-webkit-search-cancel-button,.search-input::-webkit-search-decoration{-webkit-appearance:none;display:none;}
+  .search-clear{
+    flex:0 0 auto;width:34px;height:34px;border-radius:50%;border:0;background:var(--accent-dim);color:var(--accent);
+    font-size:20px;line-height:1;display:flex;align-items:center;justify-content:center;cursor:pointer;
+    opacity:0;transform:scale(.6);pointer-events:none;
+    transition:opacity .2s var(--ease), transform .25s var(--ease-spring);
+  }
+  .search-box.has-value .search-clear{opacity:1;transform:scale(1);pointer-events:auto;}
+  .search-clear:active{transform:scale(.88);}
+  .search-hints{
+    display:flex;gap:8px;overflow-x:auto;align-items:center;
+    max-height:0;opacity:0;margin-top:0;padding:0;
+    transition:max-height .3s var(--ease), opacity .25s var(--ease), margin .3s var(--ease);
+  }
+  .search-hints::-webkit-scrollbar{display:none;}
+  .search-hints.open{max-height:48px;opacity:1;margin-top:10px;padding-bottom:2px;}
+  .hint-label{flex:0 0 auto;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:500;}
+  .hint-chip{
+    flex:0 0 auto;display:flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--bg-elev);
+    color:var(--text);border-radius:999px;padding:6px 12px;font-family:var(--font-body),sans-serif;font-size:12.5px;font-weight:400;cursor:pointer;
+    transition:border-color .2s var(--ease), transform .15s var(--ease), background .2s var(--ease);
+  }
+  .hint-chip:active{transform:scale(.94);background:var(--accent-dim);}
+  .hint-chip svg{opacity:.5;}
+  .search-meta{
+    padding:0 4px;font-size:12px;color:var(--muted);line-height:1.4;
+    max-height:0;opacity:0;overflow:hidden;
+    transition:max-height .3s var(--ease), opacity .25s var(--ease), margin .3s var(--ease);
+  }
+  .search-meta.open{max-height:40px;opacity:1;margin-top:10px;}
+  .search-meta b{color:var(--text);font-weight:600;}
+  .search-meta .alt{color:var(--accent);font-weight:600;}
+  mark.hl{background:var(--accent-dim);color:var(--accent);border-radius:3px;padding:0 1px;box-shadow:inset 0 -2px 0 rgba(75,91,63,.35);}
+  .search-empty{grid-column:1/-1;text-align:center;padding:48px 20px 30px;color:var(--muted);font-size:13px;line-height:1.55;}
+  .search-empty svg{opacity:.35;margin-bottom:12px;}
+  .search-empty .se-title{color:var(--text);font-family:var(--font-heading);font-size:16px;font-weight:700;margin-bottom:6px;}
+  .search-empty .se-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:16px;}
+  .search-empty .hint-chip{font-size:12.5px;}
+
   .filters-row{display:flex;align-items:center;gap:8px;padding:16px 20px 6px;}
   .filters{flex:1;min-width:0;display:flex;gap:8px;overflow-x:auto;scroll-snap-type:x proximity;}
   .filters::-webkit-scrollbar{display:none;}
@@ -590,6 +646,17 @@
     </div>
   </header>
 
+  <div class="search-wrap">
+    <div class="search-box" id="searchBox">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+      <input class="search-input" id="searchInput" type="search" inputmode="search" enterkeyhint="search"
+             placeholder="Поиск по каталогу" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-label="Поиск по каталогу">
+      <button class="search-clear" id="searchClear" type="button" aria-label="Очистить поиск">×</button>
+    </div>
+    <div class="search-hints" id="searchHints"></div>
+    <div class="search-meta" id="searchMeta"></div>
+  </div>
+
   <div class="ticker-wrap">
     <div class="ticker" id="ticker"></div>
   </div>
@@ -931,7 +998,7 @@ const emptyStateHTML = `
     <div>В этой категории пока нет товаров</div>
   </div>`;
 
-function cardHTML(p, i){
+function cardHTML(p, i, hlOn){
   const imgs = (p.images && p.images.length) ? p.images : (p.image ? [p.image] : []);
   const hasMulti = imgs.length > 1;
   const slides = imgs.length ? imgs : [null];
@@ -953,7 +1020,7 @@ function cardHTML(p, i){
         ` : ''}
         <div class="card-label">${p.category}</div>
       </div>
-      <div class="card-name">${p.name}</div>
+      <div class="card-name">${hlOn ? highlightName(p.name) : escHTML(p.name)}</div>
       <div class="card-price">${priceHTML(p)}</div>
     </div>
   `;
@@ -1012,21 +1079,33 @@ sortMenu.querySelectorAll('.sort-opt').forEach(opt=>{
   };
 });
 
-function renderGrid(){
+function renderGrid(instant){
   let list = activeCategory==='Все' ? PRODUCTS : PRODUCTS.filter(p=>p.category===activeCategory);
-  list = applySort(list);
-  grid.style.opacity = '0';
-  grid.style.transform = 'translateY(6px)';
-  setTimeout(()=>{
+  let searching = searchState.active;
+  let res = null;
+  if (searching){
+    res = runSearch(list, searchState.query);
+    list = res.list;
+    if (sortMode!=='default') list = applySort(list);
+  } else {
+    list = applySort(list);
+  }
+  updateSearchMeta(res, list);
+  const paint = () => {
     if (list.length===0){
-      grid.innerHTML = emptyStateHTML;
+      grid.innerHTML = searching ? searchEmptyHTML(res) : emptyStateHTML;
+      bindSearchEmpty();
     } else {
-      grid.innerHTML = list.map((p,i) => cardHTML(p,i)).join('');
+      grid.innerHTML = list.map((p,i) => cardHTML(p,i,searching)).join('');
       attachCardHandlers(grid);
     }
     grid.style.opacity = '1';
     grid.style.transform = 'translateY(0)';
-  }, 140);
+  };
+  if (instant){ paint(); return; }
+  grid.style.opacity = '0';
+  grid.style.transform = 'translateY(6px)';
+  setTimeout(paint, 140);
 }
 
 function renderFavorites(){
@@ -1711,6 +1790,278 @@ document.querySelectorAll('.sheet').forEach(sheet=>{
   const zone = sheet.querySelector('.sheet-drag-zone');
   if (zone) enableDrag(sheet, zone);
 });
+
+
+// =====================  УМНЫЙ ПОИСК  =====================
+const searchInput = document.getElementById('searchInput');
+const searchBox   = document.getElementById('searchBox');
+const searchClear = document.getElementById('searchClear');
+const searchHints = document.getElementById('searchHints');
+const searchMeta  = document.getElementById('searchMeta');
+const searchState = { query:'', tokens:[], active:false, usedAlt:null };
+const RECENT_KEY = 'dom_sharma_recent_searches';
+
+function escHTML(t){
+  return String(t==null?'':t).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+// нижний регистр, ё→е, убираем лишние символы
+function norm(t){
+  return String(t||'').toLowerCase().replace(/ё/g,'е').replace(/[^a-z0-9а-я\s.\-+]/g,' ').replace(/\s+/g,' ').trim();
+}
+function tokenize(q){
+  return norm(q).split(' ').map(w=>w.replace(/^[.\-+]+|[.\-+]+$/g,'')).filter(Boolean);
+}
+// «ghbdtn» → «привет» и наоборот (забыли переключить раскладку)
+const EN_KEYS = "qwertyuiop[]asdfghjkl;'zxcvbnm,./`";
+const RU_KEYS = "йцукенгшщзхъфывапролджэячсмитьбю.ё";
+function swapLayout(q){
+  const low = q.toLowerCase();
+  const hasEn = /[a-z]/.test(low), hasRu = /[а-яё]/.test(low);
+  if (hasEn && hasRu) return null;
+  let out = '';
+  for (const ch of low){
+    let i = hasEn ? EN_KEYS.indexOf(ch) : RU_KEYS.indexOf(ch);
+    out += i>=0 ? (hasEn ? RU_KEYS[i] : EN_KEYS[i]) : ch;
+  }
+  return out!==low ? out : null;
+}
+// расстояние Левенштейна с ранним выходом
+function lev(a, b, max){
+  if (Math.abs(a.length-b.length) > max) return max+1;
+  let prev = Array.from({length:b.length+1}, (_,i)=>i);
+  for (let i=1;i<=a.length;i++){
+    const cur = [i]; let rowMin = i;
+    for (let j=1;j<=b.length;j++){
+      const v = Math.min(prev[j]+1, cur[j-1]+1, prev[j-1] + (a[i-1]===b[j-1]?0:1));
+      cur.push(v); if (v<rowMin) rowMin = v;
+    }
+    if (rowMin > max) return max+1;
+    prev = cur;
+  }
+  return prev[b.length];
+}
+function searchIndex(p){
+  if (p._si) return p._si;
+  const name = norm(p.name), cat = norm(p.category), desc = norm(p.desc),
+        badge = norm((p.badge && BADGE_LABELS[p.badge]) || '');
+  p._si = {
+    name, cat, rest: [desc, badge, String(p.price||'')].join(' '),
+    nameWords: name.split(' ').filter(Boolean),
+    catWords: cat.split(' ').filter(Boolean),
+    restWords: [desc, badge].join(' ').split(' ').filter(w=>w.length>2)
+  };
+  return p._si;
+}
+// сколько «очков» даёт один токен запроса для товара (0 — не найден)
+function tokenScore(t, si){
+  let best = 0;
+  for (const w of si.nameWords){
+    if (w===t) best = Math.max(best, 100);
+    else if (w.startsWith(t)) best = Math.max(best, 85);
+  }
+  if (!best && si.name.includes(t)) best = 65;
+  if (!best){
+    for (const w of si.catWords){
+      if (w===t || w.startsWith(t)) { best = 48; break; }
+    }
+    if (!best && si.cat.includes(t)) best = 40;
+  }
+  if (!best){
+    for (const w of si.restWords){
+      if (w===t || w.startsWith(t)) { best = 30; break; }
+    }
+    if (!best && t.length>2 && si.rest.includes(t)) best = 22;
+  }
+  // опечатки: «кросовки» → «кроссовки»
+  if (!best && t.length>=4){
+    const max = t.length>=8 ? 2 : 1;
+    for (const w of [...si.nameWords, ...si.catWords]){
+      const cmp = w.length>t.length ? w.slice(0, t.length+(max>1?1:0)) : w;
+      const d = Math.min(lev(t, w, max), lev(t, cmp, max));
+      if (d<=max){ best = Math.max(best, 45 - d*8); }
+    }
+  }
+  return best;
+}
+function scoreProduct(p, tokens, fullQ){
+  const si = searchIndex(p);
+  let total = 0;
+  for (const t of tokens){
+    const sc = tokenScore(t, si);
+    if (!sc) return 0;
+    total += sc;
+  }
+  if (si.name.startsWith(fullQ)) total += 40;
+  else if (si.name.includes(fullQ)) total += 20;
+  if (tokens.length>1 && si.name.includes(fullQ)) total += 15;
+  return total;
+}
+function searchIn(list, q){
+  const tokens = tokenize(q);
+  if (!tokens.length) return { list, tokens };
+  const fullQ = tokens.join(' ');
+  const scored = [];
+  list.forEach((p,idx)=>{ const sc = scoreProduct(p, tokens, fullQ); if (sc) scored.push({p, sc, idx}); });
+  scored.sort((a,b)=> b.sc-a.sc || a.idx-b.idx);
+  return { list: scored.map(x=>x.p), tokens };
+}
+function runSearch(list, q){
+  let r = searchIn(list, q);
+  searchState.usedAlt = null;
+  if (!r.list.length){
+    const alt = swapLayout(q);
+    if (alt){
+      const r2 = searchIn(list, alt);
+      if (r2.tokens.length && r2.list.length){ r = r2; searchState.usedAlt = alt; }
+    }
+  }
+  searchState.tokens = r.tokens;
+  // «возможно, вы искали» — ближайшее слово из каталога
+  let suggest = null;
+  if (!r.list.length){
+    const t = tokenize(searchState.usedAlt||q).slice(-1)[0] || '';
+    if (t.length>=3){
+      let bestD = 99;
+      const words = new Set();
+      PRODUCTS.forEach(p=>{ const si = searchIndex(p); si.nameWords.concat(si.catWords).forEach(w=>{ if (w.length>=3) words.add(w); }); });
+      words.forEach(w=>{
+        const d = lev(t, w, 3) + (w[0]===t[0]?0:.5);
+        if (d<bestD){ bestD = d; suggest = w; }
+      });
+      if (bestD>3) suggest = null;
+    }
+  }
+  return { list: r.list, suggest, hadAlt: searchState.usedAlt };
+}
+// подсветка найденных фрагментов в названии
+function highlightName(name){
+  const tokens = searchState.tokens || [];
+  const src = String(name==null?'':name);
+  if (!tokens.length) return escHTML(src);
+  const low = src.toLowerCase().replace(/ё/g,'е');
+  const ranges = [];
+  tokens.forEach(t=>{
+    if (!t) return;
+    let from = 0, i;
+    while ((i = low.indexOf(t, from)) !== -1){ ranges.push([i, i+t.length]); from = i + t.length; }
+  });
+  if (!ranges.length) return escHTML(src);
+  ranges.sort((a,b)=>a[0]-b[0]);
+  const merged = [ranges[0].slice()];
+  for (let k=1;k<ranges.length;k++){
+    const last = merged[merged.length-1];
+    if (ranges[k][0] <= last[1]) last[1] = Math.max(last[1], ranges[k][1]); else merged.push(ranges[k].slice());
+  }
+  let out = '', pos = 0;
+  merged.forEach(([a,b])=>{ out += escHTML(src.slice(pos,a)) + '<mark class="hl">' + escHTML(src.slice(a,b)) + '</mark>'; pos = b; });
+  return out + escHTML(src.slice(pos));
+}
+function plural(n, one, few, many){
+  const m10 = n%10, m100 = n%100;
+  if (m10===1 && m100!==11) return one;
+  if (m10>=2 && m10<=4 && (m100<10 || m100>=20)) return few;
+  return many;
+}
+function updateSearchMeta(res, list){
+  if (!searchState.active){ searchMeta.classList.remove('open'); return; }
+  const n = list.length;
+  let txt;
+  if (!n) txt = 'Ничего не найдено';
+  else txt = `Найдено <b>${n}</b> ${plural(n,'товар','товара','товаров')}`;
+  if (res && res.hadAlt) txt += ` · показано для <span class="alt">«${escHTML(res.hadAlt)}»</span>`;
+  if (activeCategory!=='Все') txt += ` · в категории «${escHTML(activeCategory)}»`;
+  searchMeta.innerHTML = txt;
+  searchMeta.classList.add('open');
+}
+function searchEmptyHTML(res){
+  const q = escHTML(searchState.query.trim());
+  let actions = '';
+  if (res && res.suggest) actions += `<button class="hint-chip" data-q="${escHTML(res.suggest)}">Искать «${escHTML(res.suggest)}»</button>`;
+  if (activeCategory!=='Все') actions += `<button class="hint-chip" data-allcat="1">Искать во всех категориях</button>`;
+  actions += `<button class="hint-chip" data-reset="1">Сбросить поиск</button>`;
+  return `<div class="search-empty">
+    <svg width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/><path d="M8.5 11h5"/></svg>
+    <div class="se-title">По запросу «${q}» ничего нет</div>
+    <div>Проверьте написание или попробуйте<br>другое слово — например, название категории</div>
+    <div class="se-actions">${actions}</div>
+  </div>`;
+}
+function bindSearchEmpty(){
+  grid.querySelectorAll('.search-empty .hint-chip').forEach(b=>{
+    b.onclick = () => {
+      if (b.dataset.q){ setSearch(b.dataset.q, true); }
+      else if (b.dataset.allcat){ activeCategory = 'Все'; renderFilters(); renderGrid(true); }
+      else { setSearch('', false); }
+    };
+  });
+}
+
+// ---- недавние запросы ----
+function getRecent(){ try{ return JSON.parse(localStorage.getItem(RECENT_KEY)||'[]'); }catch(e){ return []; } }
+function saveRecent(q){
+  q = q.trim(); if (q.length<2) return;
+  let r = getRecent().filter(x=>x.toLowerCase()!==q.toLowerCase());
+  r.unshift(q); r = r.slice(0,6);
+  try{ localStorage.setItem(RECENT_KEY, JSON.stringify(r)); }catch(e){}
+}
+function clearRecent(){ try{ localStorage.removeItem(RECENT_KEY); }catch(e){} }
+function renderHints(){
+  const recent = getRecent();
+  const clockSvg = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
+  let html = '';
+  if (recent.length){
+    html += '<span class="hint-label">Недавнее</span>' + recent.map(r=>`<button class="hint-chip" data-q="${escHTML(r)}">${clockSvg}${escHTML(r)}</button>`).join('');
+    html += '<button class="hint-chip" data-clear="1" aria-label="Очистить историю">Очистить</button>';
+  } else {
+    const cats = [...new Set(PRODUCTS.map(p=>p.category))].slice(0,6);
+    if (cats.length) html += '<span class="hint-label">Попробуйте</span>' + cats.map(c=>`<button class="hint-chip" data-q="${escHTML(c)}">${escHTML(c)}</button>`).join('');
+  }
+  searchHints.innerHTML = html;
+  searchHints.querySelectorAll('.hint-chip').forEach(b=>{
+    b.onclick = () => {
+      if (b.dataset.clear){ clearRecent(); renderHints(); updateHintsVisibility(); return; }
+      setSearch(b.dataset.q, true);
+      searchInput.blur();
+    };
+  });
+}
+function updateHintsVisibility(){
+  const show = document.activeElement===searchInput && !searchInput.value.trim() && searchHints.children.length>0;
+  searchHints.classList.toggle('open', show);
+}
+
+function setSearch(q, saveIt){
+  searchInput.value = q;
+  applySearch(true);
+  if (saveIt) saveRecent(q);
+  updateHintsVisibility();
+}
+let searchTimer = null;
+function applySearch(instant){
+  const q = searchInput.value;
+  searchBox.classList.toggle('has-value', q.length>0);
+  searchState.query = q;
+  searchState.active = tokenize(q).length>0;
+  if (!searchState.active){ searchState.tokens = []; searchState.usedAlt = null; }
+  renderGrid(true);
+}
+searchInput.addEventListener('input', () => {
+  searchBox.classList.toggle('has-value', searchInput.value.length>0);
+  updateHintsVisibility();
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(()=>applySearch(), 110);
+});
+searchInput.addEventListener('focus', () => { renderHints(); updateHintsVisibility(); });
+searchInput.addEventListener('blur', () => {
+  if (searchState.active && grid.querySelector('.card')) saveRecent(searchInput.value);
+  setTimeout(updateHintsVisibility, 120);
+});
+searchInput.addEventListener('keydown', e => {
+  if (e.key==='Enter'){ e.preventDefault(); clearTimeout(searchTimer); applySearch(); searchInput.blur(); }
+  else if (e.key==='Escape'){ setSearch('', false); searchInput.blur(); }
+});
+searchHints.addEventListener('pointerdown', e => e.preventDefault()); // не терять фокус при тапе по подсказке
+searchClear.addEventListener('click', () => { setSearch('', false); searchInput.focus(); });
 
 updateFavBadge();
 

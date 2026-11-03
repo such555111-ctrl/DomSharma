@@ -170,7 +170,7 @@
   .card-actions .btn-outline{padding:7px 12px;font-size:10px;}
 
   .fab{
-    position:fixed;right:20px;bottom:24px;width:54px;height:54px;border-radius:50%;
+    position:fixed;z-index:40;right:20px;bottom:calc(24px + env(safe-area-inset-bottom, 0px));width:54px;height:54px;border-radius:50%;
     background:linear-gradient(135deg,var(--accent-soft),var(--accent));color:#F5EFE1;font-size:26px;border:none;cursor:pointer;
     display:flex;align-items:center;justify-content:center;box-shadow:0 8px 24px rgba(75,91,63,.35);
     transition:transform .18s var(--ease), box-shadow .18s var(--ease);
@@ -368,7 +368,7 @@
     <button class="tab-btn" data-tab="promos">Промокоды</button>
   </div>
   <div class="muted" id="countLabel"></div>
-  <div id="list" style="margin-top:16px;"></div>
+  <div id="list" style="margin-top:16px;padding-bottom:96px;"></div>
 </div>
 
 <button class="fab" id="addBtn" style="display:none;">+</button>
